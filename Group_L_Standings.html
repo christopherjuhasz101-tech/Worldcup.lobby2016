@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>World Cup 2026 — Group L Standings</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --text: #f5f5f5;
+    --text-dim: #b9b9b9;
+    --green: #3fbf3f;
+    --olive: #a89d3a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+  }
+  .wrap { width: 100vw; height: 100vh; padding: 36px 44px; display: flex; flex-direction: column; }
+  h1 {
+    font-size: 30px; font-weight: 400; letter-spacing: 1px;
+    margin-bottom: 22px; text-transform: uppercase;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 22px; }
+  th {
+    background: #000; color: #fff; text-align: left;
+    padding: 10px 14px; border: 2px solid #000; font-weight: 700;
+  }
+  th.num, td.num { text-align: center; }
+  td { padding: 12px 14px; border: 2px solid #000; font-weight: 600; }
+  tr.qualify td { background: var(--green); color: #fff; }
+  tr.third td { background: var(--olive); color: #fff; }
+  tr.out td { background: #000; color: #fff; }
+  .error-banner {
+    background: #5c1a1a; color: #ffd6d6; padding: 12px 18px;
+    border-radius: 6px; font-size: 14px; display: none;
+    white-space: pre-wrap; margin-bottom: 16px;
+  }
+  .updated { font-size: 12px; color: #555; position: fixed; bottom: 10px; right: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="error-banner" id="errorBanner"></div>
+  <h1>GROUP L STANDINGS</h1>
+  <div id="content"></div>
+</div>
+<div class="updated" id="updated"></div>
+
+<script>
+  // ====== CONFIGURATION ======
+  const LEAGUE_ID = 1;
+  const SEASON = 2026;
+  const GROUP_NAME = "Group L";
+  const REFRESH_DATA_MS = 60 * 60 * 1000; // once per hour, 24x/day
+  const STORAGE_KEY = "wc26_apifootball_key";
+
+  // Key is never stored in this file. Prompted once per browser, then saved
+  // in that browser's local storage so it persists across refreshes and
+  // restarts without needing to be re-entered.
+  function getApiKey() {
+    let key = localStorage.getItem(STORAGE_KEY);
+    if (!key) {
+      key = window.prompt("Enter your API-Football key (saved only in this browser, just once):");
+      if (key) {
+        key = key.trim();
+        localStorage.setItem(STORAGE_KEY, key);
+      }
+    }
+    return key;
+  }
+  const API_KEY = getApiKey();
+  // ============================
+
+  function showError(msg) {
+    const banner = document.getElementById('errorBanner');
+    banner.textContent = msg;
+    banner.style.display = "block";
+  }
+
+  function ordinalRowClass(idx) {
+    if (idx < 2) return 'qualify';
+    if (idx === 2) return 'third';
+    return 'out';
+  }
+
+  async function apiGet(path, qs) {
+    const url = `https://v3.football.api-sports.io/${path}?${qs}`;
+    const res = await fetch(url, { headers: { "x-apisports-key": API_KEY } });
+    const json = await res.json();
+    if (json.errors && Object.keys(json.errors).length > 0) {
+      throw new Error(path + ": " + JSON.stringify(json.errors));
+    }
+    return json.response;
+  }
+
+  async function load() {
+    if (!API_KEY) {
+      showError("No API key entered. Reload this page and enter your API-Football key when prompted.");
+      return;
+    }
+    try {
+      const standingsResp = await apiGet("standings", `league=${LEAGUE_ID}&season=${SEASON}`);
+      if (!standingsResp || standingsResp.length === 0) throw new Error("No standings data returned.");
+      const allGroupArrays = standingsResp[0].league.standings;
+      const thisGroup = allGroupArrays.find(g => g.length > 0 && g[0].group === GROUP_NAME);
+      if (!thisGroup) throw new Error(`Could not find ${GROUP_NAME} in standings response.`);
+
+      document.getElementById('content').innerHTML = `
+        <table>
+          <thead>
+            <tr><th class="num">Pos</th><th>Team</th><th class="num">MP</th><th class="num">PTS</th><th class="num">GD</th></tr>
+          </thead>
+          <tbody>
+            ${thisGroup.map((t, idx) => `
+              <tr class="${ordinalRowClass(idx)}">
+                <td class="num">${idx + 1}</td>
+                <td>${t.team.name}</td>
+                <td class="num">${t.all.played}</td>
+                <td class="num">${t.points}</td>
+                <td class="num">${t.goalsDiff > 0 ? '+' + t.goalsDiff : t.goalsDiff}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+
+      document.getElementById('errorBanner').style.display = "none";
+      document.getElementById('updated').textContent =
+        "Updated " + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    } catch (err) {
+      showError("Error loading " + GROUP_NAME + " standings: " + err.message);
+    }
+  }
+
+  load();
+  setInterval(load, REFRESH_DATA_MS);
+</script>
+</body>
+</html>

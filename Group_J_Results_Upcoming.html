@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>World Cup 2026 — Group J Results & Upcoming</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --text: #f5f5f5;
+    --text-dim: #b9b9b9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+  }
+  .wrap { width: 100vw; height: 100vh; padding: 36px 44px; display: flex; flex-direction: column; }
+  h1 {
+    font-size: 30px; font-weight: 400; letter-spacing: 1px;
+    margin-bottom: 22px; text-transform: uppercase;
+  }
+  h3 { font-size: 18px; font-weight: 400; margin-bottom: 8px; color: var(--text-dim); }
+  .list-area { font-size: 18px; line-height: 1.6; overflow-y: auto; flex: 1; }
+  .match-line { font-weight: 700; text-decoration: underline; margin-top: 14px; margin-bottom: 6px; font-size: 19px; }
+  .match-recap { color: var(--text-dim); margin-bottom: 4px; }
+  .upcoming-label { margin-top: 22px; color: var(--text-dim); font-size: 18px; }
+  .upcoming-line { margin-top: 8px; font-size: 19px; }
+  .empty-note { color: var(--text-dim); font-size: 17px; }
+  .error-banner {
+    background: #5c1a1a; color: #ffd6d6; padding: 12px 18px;
+    border-radius: 6px; font-size: 14px; display: none;
+    white-space: pre-wrap; margin-bottom: 16px;
+  }
+  .updated { font-size: 12px; color: #555; position: fixed; bottom: 10px; right: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="error-banner" id="errorBanner"></div>
+  <h1>GROUP J — RESULTS &amp; UPCOMING</h1>
+  <h3>Results:</h3>
+  <div id="resultsArea" class="list-area">Loading…</div>
+  <div class="upcoming-label" id="upcomingLabel" style="display:none;">Upcoming Matches:</div>
+  <div id="upcomingArea"></div>
+</div>
+<div class="updated" id="updated"></div>
+
+<script>
+  // ====== CONFIGURATION ======
+  const LEAGUE_ID = 1;
+  const SEASON = 2026;
+  const GROUP_NAME = "Group J";
+  const REFRESH_DATA_MS = 60 * 60 * 1000; // once per hour, 24x/day
+  const MAX_RESULTS_SHOWN = 4;
+  const MAX_UPCOMING_SHOWN = 4;
+  const STORAGE_KEY = "wc26_apifootball_key";
+
+  function getApiKey() {
+    let key = localStorage.getItem(STORAGE_KEY);
+    if (!key) {
+      key = window.prompt("Enter your API-Football key (saved only in this browser, just once):");
+      if (key) {
+        key = key.trim();
+        localStorage.setItem(STORAGE_KEY, key);
+      }
+    }
+    return key;
+  }
+  const API_KEY = getApiKey();
+  // ============================
+
+  function showError(msg) {
+    const banner = document.getElementById('errorBanner');
+    banner.textContent = msg;
+    banner.style.display = "block";
+  }
+
+  async function apiGet(path, qs) {
+    const url = `https://v3.football.api-sports.io/${path}?${qs}`;
+    const res = await fetch(url, { headers: { "x-apisports-key": API_KEY } });
+    const json = await res.json();
+    if (json.errors && Object.keys(json.errors).length > 0) {
+      throw new Error(path + ": " + JSON.stringify(json.errors));
+    }
+    return json.response;
+  }
+
+  function formatMatchDate(isoString) {
+    const d = new Date(isoString);
+    return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) + " " +
+           d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function buildRecapSentence(fixture) {
+    const home = fixture.teams.home.name;
+    const away = fixture.teams.away.name;
+    const goals = (fixture.events || []).filter(e => e.type === "Goal");
+    if (goals.length === 0) return `A scoreless match between ${home} and ${away}.`;
+    const scorerLines = goals.map(g => {
+      const scorerName = g.player && g.player.name ? g.player.name : "An unidentified player";
+      return `${scorerName} scored for ${g.team.name} in the ${g.time.elapsed}${g.time.extra ? '+' + g.time.extra : ''}' minute`;
+    });
+    if (scorerLines.length === 1) return scorerLines[0] + ".";
+    if (scorerLines.length === 2) return scorerLines[0] + ", and " + scorerLines[1] + ".";
+    return scorerLines.slice(0, -1).join("; ") + "; and " + scorerLines[scorerLines.length - 1] + ".";
+  }
+
+  async function getGroupTeamsAndFixtures() {
+    const standingsResp = await apiGet("standings", `league=${LEAGUE_ID}&season=${SEASON}`);
+    if (!standingsResp || standingsResp.length === 0) throw new Error("No standings data returned.");
+    const allGroupArrays = standingsResp[0].league.standings;
+    const thisGroup = allGroupArrays.find(g => g.length > 0 && g[0].group === GROUP_NAME);
+    if (!thisGroup) throw new Error(`Could not find ${GROUP_NAME} in standings response.`);
+
+    const teamIds = thisGroup.map(t => t.team.id);
+    const allFixtures = await apiGet("fixtures", `league=${LEAGUE_ID}&season=${SEASON}`);
+    const groupFixtures = allFixtures.filter(f =>
+      teamIds.includes(f.teams.home.id) && teamIds.includes(f.teams.away.id)
+    );
+    return { groupFixtures };
+  }
+
+  async function load() {
+    if (!API_KEY) {
+      showError("No API key entered. Reload this page and enter your API-Football key when prompted.");
+      return;
+    }
+    try {
+      const { groupFixtures } = await getGroupTeamsAndFixtures();
+
+      const finished = groupFixtures
+        .filter(f => ["FT", "AET", "PEN"].includes(f.fixture.status.short))
+        .sort((a, b) => new Date(b.fixture.date) - new Date(a.fixture.date));
+
+      const upcoming = groupFixtures
+        .filter(f => ["NS", "TBD"].includes(f.fixture.status.short))
+        .sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date));
+
+      // Results
+      const resultsArea = document.getElementById('resultsArea');
+      if (finished.length === 0) {
+        resultsArea.innerHTML = `<div class="empty-note">No matches played yet.</div>`;
+      } else {
+        const shown = finished.slice(0, MAX_RESULTS_SHOWN);
+        resultsArea.innerHTML = shown.map(f => {
+          const home = f.teams.home.name, away = f.teams.away.name;
+          const hg = f.goals.home, ag = f.goals.away;
+          const header = `${formatMatchDate(f.fixture.date)} - ${home} ${hg}-${ag} ${away}`;
+          return `<div class="match-line" data-fixture-id="${f.fixture.id}">${header}</div>`;
+        }).join("");
+
+        shown.forEach(f => {
+          apiGet("fixtures", `id=${f.fixture.id}`).then(detail => {
+            if (detail && detail[0]) {
+              const recap = buildRecapSentence(detail[0]);
+              const lineEl = document.querySelector(`.match-line[data-fixture-id="${f.fixture.id}"]`);
+              if (lineEl) {
+                const recapDiv = document.createElement('div');
+                recapDiv.className = 'match-recap';
+                recapDiv.textContent = recap;
+                lineEl.after(recapDiv);
+              }
+            }
+          }).catch(() => { /* header line still stands alone if detail fetch fails */ });
+        });
+      }
+
+      // Upcoming
+      const upcomingLabel = document.getElementById('upcomingLabel');
+      const upcomingArea = document.getElementById('upcomingArea');
+      if (upcoming.length === 0) {
+        upcomingLabel.style.display = "none";
+        upcomingArea.innerHTML = "";
+      } else {
+        upcomingLabel.style.display = "block";
+        upcomingArea.innerHTML = upcoming.slice(0, MAX_UPCOMING_SHOWN).map(f => {
+          const home = f.teams.home.name, away = f.teams.away.name;
+          return `<div class="upcoming-line">${formatMatchDate(f.fixture.date)} - ${home} v ${away}</div>`;
+        }).join("");
+      }
+
+      document.getElementById('errorBanner').style.display = "none";
+      document.getElementById('updated').textContent =
+        "Updated " + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+    } catch (err) {
+      showError("Error loading " + GROUP_NAME + " results/upcoming: " + err.message);
+    }
+  }
+
+  load();
+  setInterval(load, REFRESH_DATA_MS);
+</script>
+</body>
+</html>
