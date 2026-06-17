@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>World Cup 2026 — Group Widget</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --text: #f5f5f5;
+    --text-dim: #b9b9b9;
+    --green: #3fbf3f;
+    --olive: #a89d3a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+  }
+  .wrap { width: 100vw; height: 100vh; padding: 36px 44px; display: flex; flex-direction: column; }
+  h1 {
+    font-size: 30px; font-weight: 400; letter-spacing: 1px;
+    margin-bottom: 22px; text-transform: uppercase;
+  }
+  /* ---- Standings view ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 22px; }
+  th {
+    background: #000; color: #fff; text-align: left;
+    padding: 10px 14px; border: 2px solid #000; font-weight: 700;
+  }
+  th.num, td.num { text-align: center; }
+  td { padding: 12px 14px; border: 2px solid #000; font-weight: 600; }
+  tr.qualify td { background: var(--green); color: #fff; }
+  tr.third td { background: var(--olive); color: #fff; }
+  tr.out td { background: #000; color: #fff; }
+
+  /* ---- Results / Upcoming views ---- */
+  .list-area { font-size: 18px; line-height: 1.6; overflow-y: auto; flex: 1; }
+  .match-line { font-weight: 700; text-decoration: underline; margin-top: 16px; margin-bottom: 6px; font-size: 19px; }
+  .match-recap { color: var(--text-dim); margin-bottom: 4px; }
+  .upcoming-line { margin-top: 10px; font-size: 19px; }
+  .empty-note { color: var(--text-dim); font-size: 17px; }
+
+  .error-banner {
+    background: #5c1a1a; color: #ffd6d6; padding: 12px 18px;
+    border-radius: 6px; font-size: 14px; display: none;
+    white-space: pre-wrap; margin-bottom: 16px;
+  }
+  .updated { font-size: 12px; color: #555; position: fixed; bottom: 10px; right: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="error-banner" id="errorBanner"></div>
+  <h1 id="title">Loading…</h1>
+  <div id="content"></div>
+</div>
+<div class="updated" id="updated"></div>
+
+<script>
+  // ====== CONFIGURATION ======
+  const API_KEY = "ac05e310129ff631b373e6252d93c1f2";
+  const LEAGUE_ID = 1;
+  const SEASON = 2026;
+  const REFRESH_DATA_MS = 60 * 60 * 1000; // once per hour, 24x/day
+  const MAX_RESULTS_SHOWN = 4;
+  const MAX_UPCOMING_SHOWN = 4;
+  // ============================
+
+  // URL usage:
+  //   ?group=A&view=standings   -> just the table
+  //   ?group=A&view=results     -> just results recap
+  //   ?group=A&view=upcoming    -> just upcoming fixtures
+  const params = new URLSearchParams(window.location.search);
+  const GROUP_LETTER = (params.get('group') || 'A').toUpperCase();
+  const GROUP_NAME = "Group " + GROUP_LETTER;
+  const VIEW = (params.get('view') || 'standings').toLowerCase(); // standings | results | upcoming
+
+  const titleMap = {
+    standings: GROUP_NAME.toUpperCase() + " STANDINGS",
+    results: GROUP_NAME.toUpperCase() + " — RESULTS",
+    upcoming: GROUP_NAME.toUpperCase() + " — UPCOMING MATCHES"
+  };
+  document.getElementById('title').textContent = titleMap[VIEW] || titleMap.standings;
+
+  function showError(msg) {
+    const banner = document.getElementById('errorBanner');
+    banner.textContent = msg;
+    banner.style.display = "block";
+  }
+
+  function ordinalRowClass(idx) {
+    if (idx < 2) return 'qualify';
+    if (idx === 2) return 'third';
+    return 'out';
+  }
+
+  async function apiGet(path, qs) {
+    const url = `https://v3.football.api-sports.io/${path}?${qs}`;
+    const res = await fetch(url, { headers: { "x-apisports-key": API_KEY } });
+    const json = await res.json();
+    if (json.errors && Object.keys(json.errors).length > 0) {
+      throw new Error(path + ": " + JSON.stringify(json.errors));
+    }
+    return json.response;
+  }
+
+  function formatMatchDate(isoString) {
+    const d = new Date(isoString);
+    return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) + " " +
+           d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function buildRecapSentence(fixture) {
+    const home = fixture.teams.home.name;
+    const away = fixture.teams.away.name;
+    const goals = (fixture.events || []).filter(e => e.type === "Goal");
+    if (goals.length === 0) return `A scoreless match between ${home} and ${away}.`;
+    const scorerLines = goals.map(g => {
+      const scorerName = g.player && g.player.name ? g.player.name : "An unidentified player";
+      return `${scorerName} scored for ${g.team.name} in the ${g.time.elapsed}${g.time.extra ? '+' + g.time.extra : ''}' minute`;
+    });
+    if (scorerLines.length === 1) return scorerLines[0] + ".";
+    if (scorerLines.length === 2) return scorerLines[0] + ", and " + scorerLines[1] + ".";
+    return scorerLines.slice(0, -1).join("; ") + "; and " + scorerLines[scorerLines.length - 1] + ".";
+  }
+
+  async function getGroupTeamsAndFixtures() {
+    const standingsResp = await apiGet("standings", `league=${LEAGUE_ID}&season=${SEASON}`);
+    if (!standingsResp || standingsResp.length === 0) throw new Error("No standings data returned.");
+    const allGroupArrays = standingsResp[0].league.standings;
+    const thisGroup = allGroupArrays.find(g => g.length > 0 && g[0].group === GROUP_NAME);
+    if (!thisGroup) throw new Error(`Could not find ${GROUP_NAME} in standings response.`);
+
+    const teamIds = thisGroup.map(t => t.team.id);
+    const allFixtures = await apiGet("fixtures", `league=${LEAGUE_ID}&season=${SEASON}`);
+    const groupFixtures = allFixtures.filter(f =>
+      teamIds.includes(f.teams.home.id) && teamIds.includes(f.teams.away.id)
+    );
+    return { thisGroup, groupFixtures };
+  }
+
+  async function renderStandings() {
+    const { thisGroup } = await getGroupTeamsAndFixtures();
+    const content = document.getElementById('content');
+    content.innerHTML = `
+      <table>
+        <thead>
+          <tr><th class="num">Pos</th><th>Team</th><th class="num">MP</th><th class="num">PTS</th><th class="num">GD</th></tr>
+        </thead>
+        <tbody>
+          ${thisGroup.map((t, idx) => `
+            <tr class="${ordinalRowClass(idx)}">
+              <td class="num">${idx + 1}</td>
+              <td>${t.team.name}</td>
+              <td class="num">${t.all.played}</td>
+              <td class="num">${t.points}</td>
+              <td class="num">${t.goalsDiff > 0 ? '+' + t.goalsDiff : t.goalsDiff}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  async function renderResults() {
+    const { groupFixtures } = await getGroupTeamsAndFixtures();
+    const finished = groupFixtures
+      .filter(f => ["FT", "AET", "PEN"].includes(f.fixture.status.short))
+      .sort((a, b) => new Date(b.fixture.date) - new Date(a.fixture.date));
+
+    const content = document.getElementById('content');
+    if (finished.length === 0) {
+      content.innerHTML = `<div class="list-area"><div class="empty-note">No matches played yet.</div></div>`;
+      return;
+    }
+
+    const shown = finished.slice(0, MAX_RESULTS_SHOWN);
+    content.innerHTML = `<div class="list-area" id="resultsList">` +
+      shown.map(f => {
+        const home = f.teams.home.name, away = f.teams.away.name;
+        const hg = f.goals.home, ag = f.goals.away;
+        const header = `${formatMatchDate(f.fixture.date)} - ${home} ${hg}-${ag} ${away}`;
+        return `<div class="match-line" data-fixture-id="${f.fixture.id}">${header}</div>`;
+      }).join("") +
+      `</div>`;
+
+    // Lazily fetch event detail (scorers) per match to build recap sentences, without blocking the headline display
+    shown.forEach(f => {
+      apiGet("fixtures", `id=${f.fixture.id}`).then(detail => {
+        if (detail && detail[0]) {
+          const recap = buildRecapSentence(detail[0]);
+          const lineEl = document.querySelector(`.match-line[data-fixture-id="${f.fixture.id}"]`);
+          if (lineEl) {
+            const recapDiv = document.createElement('div');
+            recapDiv.className = 'match-recap';
+            recapDiv.textContent = recap;
+            lineEl.after(recapDiv);
+          }
+        }
+      }).catch(() => { /* header line still stands alone if detail fetch fails */ });
+    });
+  }
+
+  async function renderUpcoming() {
+    const { groupFixtures } = await getGroupTeamsAndFixtures();
+    const upcoming = groupFixtures
+      .filter(f => ["NS", "TBD"].includes(f.fixture.status.short))
+      .sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date));
+
+    const content = document.getElementById('content');
+    if (upcoming.length === 0) {
+      content.innerHTML = `<div class="list-area"><div class="empty-note">No upcoming matches scheduled.</div></div>`;
+      return;
+    }
+    content.innerHTML = `<div class="list-area">` +
+      upcoming.slice(0, MAX_UPCOMING_SHOWN).map(f => {
+        const home = f.teams.home.name, away = f.teams.away.name;
+        return `<div class="upcoming-line">${formatMatchDate(f.fixture.date)} - ${home} v ${away}</div>`;
+      }).join("") +
+      `</div>`;
+  }
+
+  async function load() {
+    try {
+      if (VIEW === 'results') await renderResults();
+      else if (VIEW === 'upcoming') await renderUpcoming();
+      else await renderStandings();
+
+      document.getElementById('errorBanner').style.display = "none";
+      document.getElementById('updated').textContent =
+        "Updated " + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    } catch (err) {
+      showError("Error loading " + GROUP_NAME + " (" + VIEW + "): " + err.message);
+    }
+  }
+
+  load();
+  setInterval(load, REFRESH_DATA_MS);
+</script>
+</body>
+</html>
